@@ -5,8 +5,8 @@ import logging
 logging.getLogger("openai.agents").setLevel(logging.ERROR)
 
 # MacOS-Use
-from macAgent import MlxAgentTool
-from macAgent import llm, controller
+from macUse.macAgent import MlxAgentTool
+from macUse.macAgent import llm, controller
 mlx_tool = MlxAgentTool(llm, controller)
 
 # Notion Agent
