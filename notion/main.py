@@ -1,0 +1,354 @@
+import os
+from dotenv import load_dotenv
+from notion_client import Client
+import httpx
+from httpx import RemoteProtocolError
+import numpy as np
+from notion_client.errors import APIResponseError, RequestTimeoutError
+from tqdm import tqdm
+import json
+import faiss
+import time
+import hnswlib
+import ollama
+
+load_dotenv()
+
+httpx_client = httpx.Client(
+    timeout=httpx.Timeout(100.0, connect=15.0)  # 60s read/write, 10s connect
+)
+
+notion = Client(
+    auth=os.getenv("NOTION_TOKEN"),
+    client=httpx_client
+)
+
+OLLAMA_EMBED_MODEL = "nomic-embed-text:latest"
+OLLAMA_HOST = "http://127.0.0.1:11435"
+
+# Configure Ollama client to use GPU (Metal on Mac)
+ollama_client = ollama.Client(
+    host=OLLAMA_HOST,
+    timeout=120
+)
+
+"""
+------------NOTION DATA--------------
+"""
+"""
+    Fetching Pages
+    - Connects to Notion
+    - Fetches all of the pages
+    - Returns the Page ID
+"""
+def all_pages():
+    pages = {} # Stores the found Page ID and avoids duplicates
+    cursor = None #
+    while True:
+        resp = notion.search(
+            **({"start_cursor": cursor} if cursor else {}), # Create a dictionary when true if not empty dict
+            filter={"property": "object", "value": "page"} # Ensures we only get pages
+        )
+        for p in resp.get("results", []): # The API key returns a JSON results
+            pages[p["id"]] = p # Doesn't allow Duplicates
+        if not resp.get("has_more"):
+            break # If there are no more pages to fetch then break
+        cursor = resp["next_cursor"] # If there are more pages to fetch then move to the next page using next cursor
+    return list(pages.values()) # Returns a list of Pages
+
+"""
+    Converting each block to text
+"""
+
+def plain(rt):
+    """Extract plain text from a Notion rich_text array or title string."""
+    if rt is None:
+        return ""
+    if isinstance(rt, str):
+        # already plain text
+        return rt
+    if isinstance(rt, list):
+        # list of dicts or strings
+        return "".join(
+            t.get("plain_text", str(t)) if isinstance(t, dict) else str(t)
+            for t in rt
+        )
+    # Fallback for unexpected types
+    return str(rt)
+    # Notion returns an object that has, type, link, plain_text, and annotations (bold, italics) from this we need to extract only the plain text
+
+def flatten_blocks(block_id):
+    # Recursively collect all of the texts form the Notion page or block
+    out = []
+    skipped = []  # Tracks blocks we can't access (like ai_block)
+
+    def walk(bid, parent_id=None):
+        cursor = None
+        while True:
+            try:
+                # retry loop for timeouts / transient errors
+                max_retries = 5
+                attempt = 0
+                while True:
+                    try:
+                        resp = notion.blocks.children.list(block_id=bid, start_cursor=cursor)
+                        break
+                    except (RequestTimeoutError, RemoteProtocolError) as e:
+                        if attempt >= max_retries:
+                            raise
+                        wait = 2 ** attempt
+                        print(f"[retry] {type(e).__name__} on children.list({bid}); sleeping {wait}s and retrying...") # Retrys if the connection is lost
+                        time.sleep(wait)
+                        attempt += 1
+                    except APIResponseError as e:
+                        if getattr(e, "code", None) in {"rate_limited"} or (500 <= getattr(e, "status", 0) < 600):
+                            if attempt >= max_retries:
+                                raise
+                            wait = 2 ** attempt
+                            print(f"[retry] {e} on {bid}; sleeping {wait}s and retrying...")
+                            time.sleep(wait)
+                            attempt += 1
+                        else:
+                            raise
+            except APIResponseError as e:
+                # couldn't list children for this block/page; record and stop recursing here
+                skipped.append({
+                    "block_id": bid,
+                    "block_type": "unknown",
+                    "reason": f"children.list error: {e.__class__.__name__}: {str(e)}",
+                    "parent_id": parent_id
+                })
+                return
+            except RequestTimeoutError as e:
+                skipped.append({
+                    "block_id": bid,
+                    "block_type": "unknown",
+                    "reason": f"timeout after retries: {e.__class__.__name__}",
+                    "parent_id": parent_id
+                })
+                return
+
+            # optional gentle pacing to avoid rate limits (≈5 req/s)
+            time.sleep(0.2)
+
+            for b in resp.get("results", []):
+                t = b.get("type") # Gets if the string paragraph, heading_1, bulleted_list_items etc
+
+                if t == "ai_block":
+                    skipped.append({
+                        "block_id": b["id"],
+                        "block_type": "ai_block",
+                        "reason": "unsupported by API",
+                        "parent_id": parent_id
+                    })
+                    continue  # skip text extraction but keep track
+
+                if t and isinstance(b.get(t), dict):
+                    obj = b[t]
+                    if "rich_text" in obj:
+                        out.append(plain(obj["rich_text"]))
+                    if "title" in obj:
+                        out.append(plain(obj["title"]))
+
+                if b.get("has_children"): # If more sub blocks exists then it recursively retrives them
+                    walk(b["id"], parent_id=bid)
+
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
+
+    walk(block_id)
+    return "\n".join([x for x in out if x.strip()]), skipped # Joins all of the texts from out and puts them in new lines
+
+"""
+------------CHUNKING--------------
+"""
+def chunk_words(text, size = 450, overlap = 60):
+    words = text.split()
+    chunks = []
+    start = 0
+
+    while start < len(words):
+        end = min(start + size, len(words))
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        if end == len(words):
+            break
+        start = end - overlap
+        if start < 0:
+            start = 0
+    return chunks
+
+
+"""
+Why chunking ?
+- Size Control: e5-base-v2 → 512 tokens max
+- Overlap: Helps to avoid the loss of context
+- Efficenty
+"""
+"""
+------------EMBEDDING--------------
+"""
+
+def embed_with_ollama(text, model_name=OLLAMA_EMBED_MODEL, max_retries=3):
+    """Embeds a single text chunk using GPU-accelerated Ollama."""
+    for attempt in range(max_retries):
+        try:
+            response = ollama_client.embeddings(
+                model=model_name,
+                prompt=text
+            )
+            embedding = response.get("embedding")
+            if embedding is not None:
+                return embedding
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"[Retry {attempt + 1}/{max_retries}] {e}")
+                time.sleep(wait_time)
+            else:
+                print(f"[Ollama error] All retries failed for: {text[:30]}... :: {e}")
+    return None
+
+
+def embed_passages(chunks):
+    """Embeds all text chunks using GPU and returns a numpy array of vectors."""
+    vectors = []
+    failed_indices = []
+    
+    for idx, chunk in enumerate(tqdm(chunks, desc="Embedding chunks with GPU")):
+        prep_text = f"search_document: {chunk}"
+        emb = embed_with_ollama(prep_text)
+        
+        if emb is not None:
+            vectors.append(emb)
+        else:
+            failed_indices.append(idx)
+            print(f"\n Chunk {idx} failed")
+        
+        # Rate limiting
+        if idx < len(chunks) - 1:
+            time.sleep(0.3)
+    
+    if not vectors:
+        raise ValueError("All embeddings failed. Check Ollama server.")
+    
+    if failed_indices:
+        print(f"\n⚠️  {len(failed_indices)}/{len(chunks)} chunks failed")
+    
+    return np.asarray(vectors, dtype="float32"), failed_indices
+
+
+def embed_query(query):
+    # Use the 'search_query:' prefix for the user's query
+    vec = embed_with_ollama([f"search_query: {query}"])
+    return vec
+
+
+# ---------------- MAIN: crawl -> chunk -> embed -> build HNSW ----------------
+if __name__ == "__main__":
+    print("Step 1: listing pages")
+    ps = all_pages()
+    print(f"-> pages found: {len(ps)}")
+    if not ps:
+        raise SystemExit("No pages visible to the integration. Share pages with your Notion integration.")
+
+    # ------------ CONFIG ------------
+    CHUNK_SIZE = 550
+    CHUNK_OVERLAP = 80
+    HNSW_M = 32 # Max number of *links* each node will keep to its nearest neighbors
+    EF_CONSTRUCTION = 200 # Number of candidate neighbors considered when building each node's links
+
+    OUTPUT_DIR = "artifacts"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    META_PATH  = os.path.join(OUTPUT_DIR, "meta.jsonl")
+    EMB_PATH   = os.path.join(OUTPUT_DIR, "chunk_vecs.npy")
+    SKIPPED_PATH = os.path.join(OUTPUT_DIR, "skipped_blocks.jsonl")
+
+    all_chunks = []
+    meta = []
+    all_skipped = []
+
+    # ------------ Crawl all pages ------------
+    for p in tqdm(ps, desc="Downloading + Chunking"):
+        page_id = p["id"]
+        page_url = p.get("url", "")
+
+        # get text + skipped items (ai_block etc.)
+        text, skipped = flatten_blocks(page_id)
+
+        # attach page context to skipped entries and accumulate
+        for s in skipped:
+            s["page_id"] = page_id
+            s["page_url"] = page_url
+        all_skipped.extend(skipped)
+
+        if not text.strip():
+            continue
+
+        # chunk
+        chunks = chunk_words(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
+
+        # accumulate chunks + metadata
+        start_idx = len(all_chunks)
+        all_chunks.extend(chunks)
+        for i, ch in enumerate(chunks):
+            meta.append({
+                "page_id": page_id,
+                "url": page_url,
+                "chunk_idx": i,
+                "text": ch
+            })
+
+    print(f"Total chunks collected: {len(all_chunks)}")
+    if all_skipped:
+        with open(SKIPPED_PATH, "w", encoding="utf-8") as f:
+            for s in all_skipped:
+                f.write(json.dumps(s, ensure_ascii=False) + "\n")
+        print(f"Skipped items recorded: {len(all_skipped)} -> {SKIPPED_PATH}")
+
+    if not all_chunks:
+        raise SystemExit("No chunks produced. Check permissions/content.")
+
+    # ------------ Embed all chunks ------------
+    # ------------ Embed all chunks ------------
+    print("Embedding chunks...")
+    chunk_vecs, failed_indices = embed_passages(all_chunks)
+    print("Embeddings shape:", chunk_vecs.shape)
+
+    # Filter metadata for failed chunks
+    if failed_indices:
+        meta = [m for i, m in enumerate(meta) if i not in failed_indices]
+        print(f"Adjusted metadata to {len(meta)} entries")
+
+    # save embeddings + meta
+    np.save(EMB_PATH, chunk_vecs)
+    with open(META_PATH, "w", encoding="utf-8") as f:
+        for m in meta:
+            f.write(json.dumps(m, ensure_ascii=False) + "\n")
+    print(f"Saved: {EMB_PATH} and {META_PATH}")
+
+    # ------------ Build HNSW index ------------
+    dim = chunk_vecs.shape[1]
+    num = chunk_vecs.shape[0]
+
+    p = hnswlib.Index(space='cosine', dim = dim)
+
+    # Graph with these values
+    p.init_index(
+        max_elements=num,
+        ef_construction = EF_CONSTRUCTION,
+        M = HNSW_M
+    )
+
+    # Add items
+    ids = np.arange(num)
+    p.add_items(chunk_vecs, ids)
+
+    p.set_ef(64)
+
+    HNSWLIB_INDEX_PATH = os.path.join(OUTPUT_DIR, "notion_hnsw_hnswlib.index")
+    p.save_index(HNSWLIB_INDEX_PATH)
+    print(f"Saved HNSW (hnswlib) index -> {HNSWLIB_INDEX_PATH}")
+    print("✅ Index build complete.")
