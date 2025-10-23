@@ -4,10 +4,10 @@ os.environ["AGENTS_DISABLE_TELEMETRY"] = "true"
 import logging
 logging.getLogger("openai.agents").setLevel(logging.ERROR)
 
-# MacOS-Use
+# MacOS-Use (using Gemini for macOS tasks due to mlx_use compatibility)
 from macUse.macAgent import MlxAgentTool
-from macUse.macAgent import llm, controller
-mlx_tool = MlxAgentTool(llm, controller)
+from macUse.macAgent import llm as macos_llm, controller
+mlx_tool = MlxAgentTool(macos_llm, controller)
 
 # Notion Agent
 from notion import *
@@ -17,6 +17,9 @@ from agents.extensions.models.litellm_model import LitellmModel
 from agents import Agent, Runner
 import asyncio
 import os
+
+import litellm
+litellm.disable_streaming_logging = True 
 
 OLLAMA_BASE = "http://localhost:11434"
 
@@ -38,7 +41,6 @@ macAgent = Agent(
     instructions="You are an agent that can perform tasks on a Mac system using Python code. Handle all Mac automation, scripting, and troubleshooting queries.",
     model=model,
     tools=[mlx_tool]
-
 )
 
 routerAgent = Agent(
@@ -63,6 +65,7 @@ async def main(query):
         "notionagent": notionAgent,
         "macagent": macAgent,
     }
+    
     # Route based on agent name
     if agent_name == "macagent":
         result = await mlx_tool.run(query)
@@ -76,11 +79,14 @@ async def main(query):
         result = routing_result  # Fallback to routerAgent's response
         print(f"{result.last_agent.name}: {result.final_output}")
     
-
-if __name__ == "__main__":
+async def main_loop():
     print("Type 'exit' to quit chat.")
     while True:
-        query = input("Enter your task (or type 'exit' to quit): ")
-        if query.strip().lower() == "exit":
+        q = input("Enter your task (or type 'exit' to quit): ")
+        if q.lower() == "exit":
             break
-        asyncio.run(main(query))
+        await main(q)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main_loop())
