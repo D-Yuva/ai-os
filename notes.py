@@ -4,9 +4,12 @@ import re
 
 # -------------- Create Notes -----------------
 def create_note(title: str, content: str):
-    # Open Notes and wait briefly
+    
+    # To see the GUI
+    """
     subprocess.run(["open", "-a", "Notes"])
     time.sleep(2)
+    """
 
     applescript = f'''
     tell application "Notes"
@@ -104,7 +107,3 @@ def move_note(title, destination_folder):
     end tell
     '''
     subprocess.run(["osascript", "-e", applescript])
-
-
-if __name__ == "__main__":
-    print(delete_note("Hahaha"))
