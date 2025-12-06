@@ -616,7 +616,7 @@ async def main(query: str):
                     notion_result = run_search(resolved_query)
                     print("notionAgent (search result):", notion_result)
                     if store_as:
-                        artifacts[store_as] = notion_result
+                        artifacts[store_as] = notion_result.get("answer", "")
                 except Exception as e:
                     print(f"❌ Error executing Notion step {step_id}: {e}")
                     # Decide whether to break or continue; here we continue.

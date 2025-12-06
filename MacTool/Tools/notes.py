@@ -2,21 +2,35 @@ import subprocess
 import time
 import re
 
+def escape_applescript_string(s: str) -> str:
+    """
+    Escape a Python string so it can be safely embedded inside an AppleScript
+    double-quoted string literal.
+    - Escapes backslashes and double quotes.
+    - Converts newlines to \\n (literal backslash-n) so AppleScript stays valid.
+      (Notes will show \\n; if you want real line breaks, we can do a fancier version.)
+    """
+    if s is None:
+        return ""
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    s = s.replace("\r", "\\r")
+    s = s.replace("\n", "\\n")
+    return s
+
 # -------------- Create Notes -----------------
 def create_note(title: str, content: str):
-    
-    # To see the GUI
-    """
-    subprocess.run(["open", "-a", "Notes"])
-    time.sleep(2)
-    """
+    title_esc = escape_applescript_string(title)
+    body_esc = escape_applescript_string(content)
 
     applescript = f'''
+    set noteTitle to "{title_esc}"
+    set noteBody to "{body_esc}"
     tell application "Notes"
         activate
         tell account "iCloud"
             tell folder "Notes"
-                make new note with properties {{name:"{title}", body:"{content}"}}
+                make new note with properties {{name:noteTitle, body:noteBody}}
             end tell
         end tell
     end tell
@@ -79,10 +93,13 @@ def delete_note(title: str):
         
 # -------------- Update Note -----------------
 def update_note(title, new_body):
+    title_esc = escape_applescript_string(title)
+    body_esc = escape_applescript_string(new_body)
+
     applescript = f'''
     tell application "Notes"
-        set n to first note of folder "Notes" whose name is "{title}"
-        set body of n to "{new_body}"
+        set n to first note of folder "Notes" whose name is "{title_esc}"
+        set body of n to "{body_esc}"
     end tell
     '''
     subprocess.run(["osascript", "-e", applescript])
