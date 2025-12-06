@@ -1,3 +1,21 @@
+"""
+ARC BROWSER TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- arc_activation        : Activate Arc.
+- arc_focus_omnibar     : Focus the Arc address bar (Cmd+L).
+- arc_open_url          : Open a URL in Arc.
+- arc_new_tab           : Open a new tab (optionally with a URL).
+- arc_reload            : Reload current tab.
+- arc_close_tab         : Close current tab.
+- arc_new_window        : Open a new Arc window.
+- arc_back              : Navigate back in history.
+- arc_forward           : Navigate forward in history.
+- arc_search_web        : Search the web via Arc's address bar.
+- arc_google_search     : Open a Google search in Arc using URL.
+- arc_find_on_page      : Find text on current page.
+"""
+
 import subprocess
 import time
 import urllib.parse
