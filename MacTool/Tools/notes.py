@@ -1,8 +1,20 @@
+"""
+NOTES.APP TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- notes_create_note        : Create a new note with a title and content.
+- notes_list_notes         : List all notes in the default Notes folder.
+- notes_read_note          : Read the content of a note by title.
+- notes_delete_note        : Delete a note by title.
+- notes_update_note        : Update the body of an existing note.
+- notes_create_folder      : Create a new folder in Notes (iCloud).
+- notes_move_note          : Move a note to another folder.
+"""
+
 import subprocess
-import time
 import re
 
-def escape_applescript_string(s: str) -> str:
+def _esc(s):
     """
     Escape a Python string so it can be safely embedded inside an AppleScript
     double-quoted string literal.
@@ -10,117 +22,92 @@ def escape_applescript_string(s: str) -> str:
     - Converts newlines to \\n (literal backslash-n) so AppleScript stays valid.
       (Notes will show \\n; if you want real line breaks, we can do a fancier version.)
     """
-    if s is None:
-        return ""
-    s = s.replace("\\", "\\\\")
-    s = s.replace('"', '\\"')
-    s = s.replace("\r", "\\r")
-    s = s.replace("\n", "\\n")
-    return s
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
-# -------------- Create Notes -----------------
-def create_note(title: str, content: str):
-    title_esc = escape_applescript_string(title)
-    body_esc = escape_applescript_string(content)
-
-    applescript = f'''
-    set noteTitle to "{title_esc}"
-    set noteBody to "{body_esc}"
+def create_note(title, content):
+    script = f'''
     tell application "Notes"
-        activate
         tell account "iCloud"
             tell folder "Notes"
-                make new note with properties {{name:noteTitle, body:noteBody}}
+                make new note with properties {{name:"{_esc(title)}", body:"{_esc(content)}"}}
             end tell
         end tell
     end tell
     '''
-    subprocess.run(["osascript", "-e", applescript])
+    subprocess.run(["osascript", "-e", script], check=True)
 
-# -------------- List Notes -----------------
 def list_notes():
-    applescript = '''
-    tell application "Notes"
-        set noteNames to name of notes of folder "Notes"
-        return noteNames
-    end tell
-    '''
-    out = subprocess.run(["osascript", "-e", applescript], capture_output=True, text=True) # Capture output will save your output in the variable if not it goes to the terminal
-                                                                                           # text will give the output in string instead of bytes
-    notes = [name.strip() for name in out.stdout.strip().split(",") if name.strip()]
-    # Format for readable output
-    formatted = "\n".join([f"{i+1}. {note}" for i, note in enumerate(notes)])
-    return formatted
-
-# -------------- Read Content from notes -----------------
-def read_note(title):
-    applescript = f'''
-    tell application "Notes"
-        set n to first note of folder "Notes" whose name is "{title}"
-        return body of n
-    end tell
-    '''
-    out = subprocess.run(["osascript", "-e", applescript], capture_output=True, text=True)
-    raw = out.stdout.strip()
-
-    # Remove HTML tags (e.g., <div>, <h1>)
-    clean = re.sub(r'<.*?>', '', raw)
-    # Replace known HTML entities
-    clean = clean.replace('&quot', '"')
-    # Replace multiple line breaks with single blank line
-    clean = re.sub(r'\n+', '\n', clean)
-    # Strip leading/trailing whitespace
-    return clean.strip()
-
-# -------------- Delete Note -----------------
-def delete_note(title: str):
-    applescript = f'''
-    tell application "Notes"
-        delete (first note of folder "Notes" whose name is "{title}")
-    end tell
-    '''
-    result = subprocess.run(["osascript", "-e", applescript], capture_output=True, text=True)
-    result_text = result.stdout.strip()
-
-    if result_text == "deleted":
-        return f'Note "{title}" deleted'
-    else:
-        print(f'Failed to delete note "{title}". File Probably doesnt exist')
-        print("---------------------------")
-        print("Here is the list of files")
-        print(list_notes())
-        return "---------------------------"
-        
-# -------------- Update Note -----------------
-def update_note(title, new_body):
-    title_esc = escape_applescript_string(title)
-    body_esc = escape_applescript_string(new_body)
-
-    applescript = f'''
-    tell application "Notes"
-        set n to first note of folder "Notes" whose name is "{title_esc}"
-        set body of n to "{body_esc}"
-    end tell
-    '''
-    subprocess.run(["osascript", "-e", applescript])
-
-# -------------- Organise Note -----------------
-def create_folder(folder_name):
-    applescript = f'''
+    script = '''
     tell application "Notes"
         tell account "iCloud"
-            make new folder with properties {{name:"{folder_name}"}}
+            tell folder "Notes"
+                set names to name of notes
+                return names
+            end tell
         end tell
     end tell
     '''
-    subprocess.run(["osascript", "-e", applescript])
+    out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+    return [x.strip() for x in out.stdout.split(",") if x.strip()]
 
-# -------------- Move notes between folders -----------------
-def move_note(title, destination_folder):
-    applescript = f'''
+def read_note(title):
+    script = f'''
     tell application "Notes"
-        set n to first note of folder "Notes" whose name is "{title}"
-        move n to folder "{destination_folder}" of account "iCloud"
+        tell account "iCloud"
+            tell folder "Notes"
+                set n to first note whose name is "{_esc(title)}"
+                return body of n
+            end tell
+        end tell
     end tell
     '''
-    subprocess.run(["osascript", "-e", applescript])
+    out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+    return re.sub(r'<.*?>', '', out.stdout).strip()
+
+def update_note(title, body):
+    script = f'''
+    tell application "Notes"
+        tell account "iCloud"
+            tell folder "Notes"
+                set n to first note whose name is "{_esc(title)}"
+                set body of n to "{_esc(body)}"
+            end tell
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], check=True)
+
+def delete_note(title):
+    script = f'''
+    tell application "Notes"
+        tell account "iCloud"
+            tell folder "Notes"
+                delete (first note whose name is "{_esc(title)}")
+            end tell
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], check=True)
+
+def create_folder(folder):
+    script = f'''
+    tell application "Notes"
+        tell account "iCloud"
+            if not (exists folder "{folder}") then
+                make new folder with properties {{name:"{folder}"}}
+            end if
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], check=True)
+
+def move_note(title, folder):
+    script = f'''
+    tell application "Notes"
+        tell account "iCloud"
+            set n to first note of folder "Notes" whose name is "{_esc(title)}"
+            move n to folder "{folder}"
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], check=True)

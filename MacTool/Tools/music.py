@@ -1,4 +1,16 @@
-# music.py
+"""
+MUSIC.APP TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- music_play              : Start playback in Music.app.
+- music_pause             : Pause playback in Music.app.
+- music_next_track        : Skip to the next track.
+- music_previous_track    : Go to the previous track.
+- music_play_playlist     : Play a playlist by name.
+- music_create_playlist   : Create a new playlist.
+- music_add_to_playlist   : Add a track file to a playlist.
+"""
+
 import subprocess
 
 def play():

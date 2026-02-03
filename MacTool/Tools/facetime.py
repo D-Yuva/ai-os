@@ -1,3 +1,10 @@
+"""
+FACETIME TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- Call                  : Opens Facetime.
+"""
+
 import subprocess
 
 def call_number(number: str):

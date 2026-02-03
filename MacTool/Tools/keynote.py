@@ -1,4 +1,12 @@
-# keynote.py
+"""
+KEYNOTE PRESENTATION TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- keynote_create_presentation : Create a new Keynote presentation (optionally with a theme).
+- keynote_add_slide           : Add a new blank slide to the front presentation.
+- keynote_close_presentation  : Close the front Keynote presentation without saving.
+"""
+
 import subprocess
 
 def create_presentation(template=None):

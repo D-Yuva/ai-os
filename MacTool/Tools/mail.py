@@ -1,50 +1,52 @@
-# mail.py
+"""
+MAIL.APP TASKS (AppleScript-based via subprocess.run)
+
+Supported actions:
+- mail_send_email      : Send an email via Mail.app.
+- mail_create_mailbox  : Create a new local mailbox in Mail.app.
+- mail_move_messages   : Move emails between mailboxes based on subject.
+"""
+
 import subprocess
 
 def send_email(to_address, subject, content, sender=None):
-    """
-    Send an email via Mail.app. Requires a valid recipient (to_address).
-    Optionally set sender address if needed (AppleScript format "Name <email>").
-    """
-    send_props = ''
-    if sender:
-        send_props += f'set sender to "{sender}"\n'
+    sender_line = f'set sender to "{sender}"' if sender else ""
+
     script = f'''
     tell application "Mail"
-        set newMessage to make new outgoing message with properties {{visible:false}}
-        tell newMessage
+        set msg to make new outgoing message with properties {{visible:false, subject:"{subject}", content:"{content}"}}
+        tell msg
             make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
-            set subject to "{subject}"
-            set content to "{content}"
-            {send_props}
+            {sender_line}
         end tell
-        send newMessage
-    end tell'''
+        send msg
+    end tell
+    '''
     subprocess.run(["osascript", "-e", script], check=True)
 
 def create_mailbox(name):
-    """
-    Create a new mailbox in Mail.app with the given name (local mailbox).
-    """
     script = f'''
     tell application "Mail"
         if not (exists mailbox "{name}") then
             make new mailbox with properties {{name:"{name}"}}
         end if
-    end tell'''
+    end tell
+    '''
     subprocess.run(["osascript", "-e", script], check=True)
 
 def move_messages(subject, from_mailbox, to_mailbox):
-    """
-    Move messages with a given subject from one mailbox to another.
-    """
     script = f'''
     tell application "Mail"
-        set sourceBox to mailbox "{from_mailbox}"
-        set destBox to mailbox "{to_mailbox}"
-        set theMessages to every message of sourceBox whose subject is "{subject}"
-        repeat with msg in theMessages
-            move msg to destBox
+        if not (exists mailbox "{from_mailbox}") then error "Source mailbox missing"
+        if not (exists mailbox "{to_mailbox}") then error "Destination mailbox missing"
+
+        set src to mailbox "{from_mailbox}"
+        set dst to mailbox "{to_mailbox}"
+
+        set msgs to every message of src whose subject is "{subject}"
+        repeat with m in msgs
+            move m to dst
         end repeat
-    end tell'''
+    end tell
+    '''
     subprocess.run(["osascript", "-e", script], check=True)

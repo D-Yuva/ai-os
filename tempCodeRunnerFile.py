@@ -41,8 +41,7 @@ from notion.search import run_search, fetch_notion_content
 
 litellm.disable_streaming_logging = True 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, ".agent_config.json")
+CONFIG_PATH = os.path.expanduser("~/.agent_config.json")
 
 def load_config():
     if os.path.exists(CONFIG_PATH):
@@ -219,12 +218,6 @@ macAgent = Agent(
     ======================
     REMINDERS TOOLS
     ======================
-    When creating reminders, ALWAYS use the tool:
-    "reminders_add_reminder"
-
-    Do NOT invent tool names.
-    Only use tools explicitly listed.
-
     18. reminders_create_list
         - Args: {"name": "<string>"}
 
@@ -607,25 +600,21 @@ async def run_mac_tool_from_query(query: str):
 
     tool_func = TOOL_REGISTRY.get(tool_name)
     if tool_func is None:
-        raise RuntimeError(f"❌ Tool not registered: {tool_name}")
-
+        print(f"❌ Unknown tool '{tool_name}'. Full output: {raw}")
+        return
 
     try:
-        result_text = tool_func(args)  # execute tool
+        result_text = tool_func(args)  # capture return value
 
-    except Exception as e:
-        # HARD FAILURE — tool did not complete
-        raise RuntimeError(f"❌ Tool '{tool_name}' execution failed: {e}")
-
-    else:
-        # SUCCESS path only
+        # Always print the message
         print("macAgent:", message)
 
+        # If the tool returned something (like list_notes or read_note), print that too
         if result_text:
             print(result_text)
 
-        return result_text
-
+    except Exception as e:
+        print(f"❌ Error running tool '{tool_name}': {e}")
 
 
 # ---------- Routing Logic ----------
