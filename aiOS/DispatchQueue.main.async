@@ -1,0 +1,10 @@
+URLSession.shared.dataTask(with: request) { data, response, error in
+    guard let data = data else { return }
+
+    let decoded = try? JSONDecoder().decode(AgentResponse.self, from: data)
+
+    DispatchQueue.main.async {
+        self.agentOutput = decoded?.response ?? "No response"
+        self.isLoading = false
+    }
+}.resume()

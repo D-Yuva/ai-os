@@ -3,53 +3,64 @@ import SwiftUI
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 
-    var window: NSWindow!
-
-    // MARK: - App lifecycle
+    private var window: NSWindow!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        setupWindow()
+        createWindow()
         registerHotKey()
     }
 
-    // MARK: - Window setup
+    // MARK: - Window creation (Spotlight-style)
 
-    private func setupWindow() {
+    private func createWindow() {
         let contentView = ContentView()
 
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 80),
-            styleMask: [.titled, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 90),
+            styleMask: [
+                .titled,
+                .fullSizeContentView
+            ],
             backing: .buffered,
             defer: false
         )
 
         window.center()
-        window.isReleasedWhenClosed = false
         window.level = .floating
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+
+        // 🔥 Liquid glass requirements
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+
+        // ❌ REMOVE DUPLICATE BUTTONS
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+
+        // Optional: keep close only
+        window.standardWindowButton(.closeButton)?.isHidden = false
+
         window.contentView = NSHostingView(rootView: contentView)
 
         window.orderOut(nil) // start hidden
     }
 
-    // MARK: - Global hotkey
+    // MARK: - Global Hotkey (⌘⌥M)
 
     private func registerHotKey() {
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return }
+            guard let self else { return }
 
             if event.modifierFlags.contains([.command, .option]),
-               event.keyCode == 46 { // M key
+               event.keyCode == 46 { // M
                 self.toggleWindow()
             }
         }
     }
 
-    // MARK: - Window toggle
+    // MARK: - Toggle visibility
 
     private func toggleWindow() {
         if window.isVisible {

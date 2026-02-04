@@ -576,92 +576,67 @@ def fill_placeholders(text: str, artifacts: dict) -> str:
     return re.sub(r"\{\{([^{}]+)\}\}", _repl, text)
 
 
-async def run_mac_tool_from_query(query: str):
-    """
-    Ask macAgent to decide which Mac tool to use, parse its JSON,
-    and execute the corresponding Python tool from TOOL_REGISTRY.
-    """
+async def run_mac_tool_from_query(query: str) -> str:
     mac_result = await Runner.run(macAgent, query)
     raw = (mac_result.final_output or "").strip()
-    print("macAgent raw output:", repr(raw))
 
     if not raw:
-        print("❌ macAgent returned empty output (expected JSON). Not running any tool.")
-        return
+        return "No response from macAgent."
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print("❌ Could not parse macAgent output as JSON. Not running any tool.")
-        print("   Error:", e)
-        return
+    data = json.loads(raw)
 
     tool_name = data.get("tool")
-    args = data.get("args") or {}
     message = data.get("message") or ""
 
     if tool_name is None:
-        # No tool, just a message
-        print("macAgent:", message)
-        return
+        return message
 
     tool_func = TOOL_REGISTRY.get(tool_name)
-    if tool_func is None:
-        raise RuntimeError(f"❌ Tool not registered: {tool_name}")
+    if not tool_func:
+        return f"Unknown tool: {tool_name}"
 
-
-    try:
-        result_text = tool_func(args)  # execute tool
-
-    except Exception as e:
-        # HARD FAILURE — tool did not complete
-        raise RuntimeError(f"❌ Tool '{tool_name}' execution failed: {e}")
-
-    else:
-        # SUCCESS path only
-        print("macAgent:", message)
-
-        if result_text:
-            print(result_text)
-
-        return result_text
-
+    tool_func(data.get("args") or {})
+    return message
 
 
 # ---------- Routing Logic ----------
-async def main(query: str):
+async def main(query: str) -> str:
+    """
+    Main entrypoint for ALL queries.
+    Returns a string response suitable for UI / HTTP response.
+    """
+
     # 1. Ask router which agent should handle this
     routing_result = await Runner.run(routerAgent, query)
     agent_name = (routing_result.final_output or "").strip().lower()
-    
+
     Agents = {
         "notionagent": notionAgent,
         "macagent": macAgent,
         "workflowagent": workflowAgent,
     }
 
-    # ---------  A. WORKFLOW MODE (QUEUE OF STEPS)  ---------
+    # =====================================================
+    # A. WORKFLOW MODE (QUEUE OF STEPS)
+    # =====================================================
     if agent_name == "workflowagent":
+        output_lines = []
+
         # Step 1: get the plan
         plan_result = await Runner.run(workflowAgent, query)
         raw_plan = (plan_result.final_output or "").strip()
-        print("workflowAgent raw plan:", repr(raw_plan))
 
         if not raw_plan:
-            print("❌ workflowAgent returned empty output (expected JSON plan).")
-            return
+            return "❌ Workflow agent returned empty plan."
 
         try:
             plan = json.loads(raw_plan)
         except json.JSONDecodeError as e:
-            print("❌ Could not parse workflowAgent output as JSON. Aborting workflow.")
-            print("   Error:", e)
-            return
+            return f"❌ Workflow plan JSON error: {e}"
 
         steps = plan.get("steps", [])
         if not isinstance(steps, list) or not steps:
-            print("❌ workflowAgent returned no steps. Nothing to do.")
-            return
+            return "❌ Workflow returned no steps."
 
         artifacts = {}  # stores outputs keyed by 'store_as'
 
@@ -673,55 +648,64 @@ async def main(query: str):
             step_query = step.get("query") or ""
             store_as = step.get("store_as")
 
-            print(f"\n--- Executing step {step_id}: {step_desc} ---")
+            output_lines.append(f"▶ Step {step_id}: {step_desc}")
 
-            # Fill any {{placeholder}} with previously stored artifacts
             resolved_query = fill_placeholders(step_query, artifacts)
 
+            # ---------- Notion ----------
             if step_agent == "notionagent":
-                # For now, we call run_search directly with the resolved query.
-                # You can swap this with more advanced Notion operations later.
                 try:
                     notion_result = run_search(resolved_query)
-                    print("notionAgent (search result):", notion_result)
+                    answer = notion_result.get("answer", "")
                     if store_as:
-                        artifacts[store_as] = notion_result.get("answer", "")
+                        artifacts[store_as] = answer
+                    output_lines.append(answer or "ℹ️ Notion step completed.")
                 except Exception as e:
-                    print(f"❌ Error executing Notion step {step_id}: {e}")
-                    # Decide whether to break or continue; here we continue.
-                    continue
+                    output_lines.append(f"❌ Notion step failed: {e}")
 
+            # ---------- macAgent ----------
             elif step_agent == "macagent":
-                # Delegate to macAgent to pick the exact tool + arguments
-                await run_mac_tool_from_query(resolved_query)
+                try:
+                    result = await run_mac_tool_from_query(resolved_query)
+                    if store_as:
+                        artifacts[store_as] = result
+                    output_lines.append(result)
+                except Exception as e:
+                    output_lines.append(f"❌ Mac step failed: {e}")
 
             else:
-                print(f"❌ Unknown step agent '{step_agent}' in step {step_id}. Skipping.")
-                continue
+                output_lines.append(f"❌ Unknown agent '{step_agent}'")
 
-        print("\n✅ Workflow complete.")
-        return
+        output_lines.append("✅ Workflow complete.")
+        return "\n".join(output_lines)
 
-    # ---------  B. SIMPLE MAC MODE (SINGLE ACTION)  ---------
+    # =====================================================
+    # B. SIMPLE MAC MODE
+    # =====================================================
     if agent_name == "macagent":
-        await run_mac_tool_from_query(query)
-        return
+        return await run_mac_tool_from_query(query)
 
-    # ---------  C. SIMPLE NOTION MODE  ---------
-    elif agent_name == "notionagent":
-        result = run_search(query)
-        print(result)
-        return
+    # =====================================================
+    # C. SIMPLE NOTION MODE
+    # =====================================================
+    if agent_name == "notionagent":
+        try:
+            result = run_search(query)
+            return result.get("answer") or json.dumps(result, indent=2)
+        except Exception as e:
+            return f"❌ Notion error: {e}"
 
-    # ---------  D. FALLBACK (direct agent)  ---------
-    elif agent_name in Agents:
-        selected_agent = Agents[agent_name]
+    # =====================================================
+    # D. FALLBACK
+    # =====================================================
+    selected_agent = Agents.get(agent_name)
+    if selected_agent:
         result = await Runner.run(selected_agent, query)
-        print(f"{result.last_agent.name}: {result.final_output}")
-    else:
-        # if routerAgent says "routerAgent" or something unexpected
-        result = routing_result
-        print(f"{result.last_agent.name}: {result.final_output}")
+        return result.final_output or ""
+
+    # Router talking about itself / unexpected
+    return routing_result.final_output or ""
+
 
 
 async def main_loop():
